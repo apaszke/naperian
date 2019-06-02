@@ -98,11 +98,17 @@ instance (IsTensor a ~ True) => TFoldable (Dim n a) where
 class Functor' f a b where
     fmap' :: (a -> b) -> f a -> f b
 
-class DimFunctor' f a b (at :: Bool) (bt :: Bool) where
-    dimfmap' :: Proxy at -> Proxy bt -> (a -> b) -> f a -> f b
-
+-- The following simply enumerates all cases of a and b being a tensor or not, but we have
+-- to use the extra level of indirection through DimFunctor' to avoid overlapping instances
+-- errors. One can easily convince themself that they _are not_ overlapping, but GHC doesn't
+-- care about constraints when picking the class instances and hence we need to resort to those
+-- ugly tricks. More about this technique can be found at
+-- https://kseo.github.io/posts/2017-02-05-avoid-overlapping-instances-with-closed-type-families.html
 instance (IsTensor a ~ at, IsTensor b ~ bt, DimFunctor' f a b at bt) => Functor' f a b where
     fmap' = dimfmap' (Proxy :: Proxy at) (Proxy :: Proxy bt)
+
+class DimFunctor' f a b (at :: Bool) (bt :: Bool) where
+    dimfmap' :: Proxy at -> Proxy bt -> (a -> b) -> f a -> f b
 
 instance (IsTensor a ~ False, IsTensor b ~ False) => DimFunctor' (Dim n) a b 'False 'False where
     dimfmap' _ _ f (Native l) = Native $ fmap f l
