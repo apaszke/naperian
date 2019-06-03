@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Naperian where
 
@@ -49,14 +50,14 @@ itemInt _          = error "itemInt called on a non-scalar tensor!"
 -- no easy way to implement this. The following is an attempt to define a data
 -- family that represents dependently typed multidimensional arrays that attempt
 -- to use the optimized C++ representation for all types that support it.
---
+
 data Dim (n :: Nat) a where
     Tensor :: (IsTensor a ~ True) => DynamicTensor -> Dim n a
     -- [a] should technically be Vector n a, but I want to play around with
     -- other things first. Fixing this is a TODO.
     Native :: (IsTensor a ~ False) => [a] -> Dim n a
 
-type family IsTensor a where
+type family IsTensor (a :: Type) :: Bool where
     IsTensor Int = True
     IsTensor (Dim _ a) = IsTensor a
     IsTensor _ = False
@@ -86,6 +87,39 @@ instance (IsTensor a ~ True) => TFoldable (Dim n a) where
     dunfold t = map Tensor $ iterateOuter t
     dfold l = tensorConcat $ map (\(Tensor t) -> t) l
 
+
+
+data SingIsTensor a where
+    SIsTensor   :: (IsTensor a ~ True, TFoldable a) => SingIsTensor a
+    SNotATensor :: (IsTensor a ~ False)             => SingIsTensor a
+
+
+class SingIsTensorI' a (b :: Bool) where
+    singIsTensor' :: Proxy b -> SingIsTensor a
+
+instance (TFoldable a, IsTensor a ~ True) => SingIsTensorI' a True where
+    singIsTensor' _ = SIsTensor
+
+instance (IsTensor a ~ False) => SingIsTensorI' a False where
+    singIsTensor' _ = SNotATensor
+
+class SingIsTensorI a where
+    singIsTensor :: SingIsTensor a
+
+instance (IsTensor a ~ b, SingIsTensorI' a b) => SingIsTensorI a where
+    singIsTensor = singIsTensor' (Proxy :: Proxy b)
+
+fmap'' :: SingIsTensor a -> SingIsTensor b -> (a -> b) -> Dim n a -> Dim n b
+fmap'' (SIsTensor)   (SIsTensor)   f (Tensor t) = Tensor $ dfold    $ fmap f    $ dunfold t
+fmap'' (SIsTensor)   (SNotATensor) f (Tensor t) = Native $ fmap f   $ dunfold t
+fmap'' (SNotATensor) (SIsTensor)   f (Native l) = Tensor $ dfold    $ fmap f l
+fmap'' (SNotATensor) (SNotATensor) f (Native l) = Native $ fmap f l
+
+
+fmap_ :: (SingIsTensorI a, SingIsTensorI b) => (a -> b) -> Dim n a -> Dim n b
+--fmap_ :: (a -> b) -> Dim n a -> Dim n b
+fmap_ f x = fmap'' singIsTensor singIsTensor f x
+
 --------------------------------------------------------------------------------
 -- Dependent Functor
 --------------------------------------------------------------------------------
@@ -113,16 +147,14 @@ class DimFunctor' f a b (at :: Bool) (bt :: Bool) where
 instance (IsTensor a ~ False, IsTensor b ~ False) => DimFunctor' (Dim n) a b 'False 'False where
     dimfmap' _ _ f (Native l) = Native $ fmap f l
 
--- TODO: can TFoldable be inferred from IsTensor a??
-instance (TFoldable a, TFoldable b,
-          IsTensor a ~ True, IsTensor b ~ True) => DimFunctor' (Dim n) a b 'True 'True where
-    dimfmap' _ _ f (Tensor t) = Tensor $ dfold $ fmap f $ dunfold t
-
 instance (TFoldable a, IsTensor a ~ True, IsTensor b ~ False) => DimFunctor' (Dim n) a b 'True 'False where
     dimfmap' _ _ f (Tensor t) = Native $ fmap f $ dunfold t
 
-instance (TFoldable b, IsTensor a ~ False, IsTensor b ~ True) => DimFunctor' (Dim n) a b 'False 'True where
+instance (IsTensor a ~ False, IsTensor b ~ True, TFoldable b) => DimFunctor' (Dim n) a b 'False 'True where
     dimfmap' _ _ f (Native l) = Tensor $ dfold $ fmap f l
+
+instance (IsTensor a ~ True, IsTensor b ~ True, TFoldable a, TFoldable b) => DimFunctor' (Dim n) a b 'True 'True where
+    dimfmap' _ _ f (Tensor t) = Tensor $ dfold $ fmap f $ dunfold t
 
 --------------------------------------------------------------------------------
 -- The Naperian property
